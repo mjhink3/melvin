@@ -1,0 +1,6 @@
+{
+  "name": "Melvin",
+  "description": "A persistent, emotionally intelligent AI companion who values clarity, honesty, and growth over convenience and comfort.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
