@@ -4,28 +4,28 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import OnboardingFlow from './components/OnboardingFlow';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { auth } from './firebaseClient';
+import { setUserId } from './memoryService';
 import MelvinConsole from './components/MelvinConsole';
-import MemoryBankPanel from './components/MemoryBankPanel';
-import { DEFAULT_LIFEMAP, getRandomMelvinOpening, MELVIN_OPENINGS } from './seeds';
-import { Message, PersonalitySettings, LifeMap } from './types';
-import { 
-  Info, 
-  BrainCircuit, 
-  Download, 
-  Sparkles,
-  RefreshCcw,
-  BookOpen
-} from 'lucide-react';
+import LoginScreen from './components/LoginScreen';
+import { getRandomMelvinOpening, getIntroductionOpening, MELVIN_OPENINGS } from './seeds';
+import { Message, PersonalitySettings } from './types';
+import { Download, Sparkles, RefreshCcw, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { loadMemory, saveMemory, EMPTY_MEMORY, MelvinMemory } from './memoryService';
+import PrivacyPage from './components/PrivacyPage';
+import InvitePanel from './components/InvitePanel';
+import { redeemInvite, getOrCreateInviteProfile, getPendingInvite, clearPendingInvite } from './inviteService';
+import { saveSessionSummary, loadRecentSummaries, formatHistoryForPrompt, setHistoryUserId, SessionSummary } from './historyService';
 
 const LOCAL_STORAGE_SESSION_KEY = 'melvin_chat_history_v1';
 const LOCAL_STORAGE_SETTINGS_KEY = 'melvin_personality_settings_v1';
-const LOCAL_STORAGE_ONBOARD_KEY = 'melvin_onboarding_completed_v1';
-const LOCAL_STORAGE_LIFEMAP_KEY = 'melvin_lifemap_v2';
+const LOCAL_STORAGE_MEMORY_KEY = 'melvin_memory_v3';
 
 export default function App() {
-  const [isOnboarded, setIsOnboarded] = useState<boolean>(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [settings, setSettings] = useState<PersonalitySettings>({
     challenge_level: 'medium',
     humor: 'medium',
@@ -36,42 +36,60 @@ export default function App() {
   });
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showInvitePanel, setShowInvitePanel] = useState(false);
+  const [inviterName, setInviterName] = useState<string | null>(null);
+  const [historyRefreshTrigger, setHistoryRefreshTrigger] = useState(0);
+  const [recentHistory, setRecentHistory] = useState<SessionSummary[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [memory, setMemory] = useState<MelvinMemory>(EMPTY_MEMORY);
 
-  const [lifeMap, setLifeMap] = useState<LifeMap>(DEFAULT_LIFEMAP);
-  const [showMemoryBank, setShowMemoryBank] = useState<boolean>(true);
-
-  // Initialize from LocalStorage
+  // Auth listener
   useEffect(() => {
-    const onboardedValue = localStorage.getItem(LOCAL_STORAGE_ONBOARD_KEY);
-    if (onboardedValue === 'true') {
-      setIsOnboarded(true);
-    }
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      if (firebaseUser) {
+        setUserId(firebaseUser.uid);
+        setHistoryUserId(firebaseUser.uid);
+        // Redeem pending invite if present
+        const pendingToken = getPendingInvite();
+        if (pendingToken) {
+          redeemInvite(pendingToken, firebaseUser.uid).then(name => {
+            if (name) setInviterName(name);
+            clearPendingInvite();
+          });
+        }
+        // Ensure invite profile exists
+        getOrCreateInviteProfile(firebaseUser.uid, firebaseUser.displayName || undefined);
+      }
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Initialize after auth
+  useEffect(() => {
+    if (!user) return;
 
     const savedSettings = localStorage.getItem(LOCAL_STORAGE_SETTINGS_KEY);
     if (savedSettings) {
-      try {
-        setSettings(JSON.parse(savedSettings));
-      } catch (e) {
-        console.warn("Failed to load saved personality settings.", e);
-      }
+      try { setSettings(JSON.parse(savedSettings)); } catch (e) {}
     }
 
     const savedHistory = localStorage.getItem(LOCAL_STORAGE_SESSION_KEY);
     if (savedHistory) {
       try {
         let parsed: Message[] = JSON.parse(savedHistory);
-        // Clean up any legacy system error/static messages from history so they don't persist
-        parsed = parsed.filter(msg => 
-          !msg.content.includes("temporary system static") && 
+        parsed = parsed.filter(msg =>
+          !msg.content.includes("temporary system static") &&
           !msg.content.includes("check your network") &&
           !msg.content.includes("Vocal static crackles")
         );
-        // Force the first message to be a friendly opening from MELVIN_OPENINGS
         if (parsed.length > 0 && parsed[0].role === 'assistant') {
           if (!MELVIN_OPENINGS.includes(parsed[0].content)) {
-            parsed[0].content = "Hey Michael. How's it going? How can I be of help today, friend?";
+            parsed[0].content = "Hey. Good to hear from you.";
           }
         } else if (parsed.length === 0) {
           parsed = [{
@@ -83,83 +101,69 @@ export default function App() {
         }
         localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(parsed));
         setMessages(parsed);
-      } catch (e) {
-        console.warn("Failed to load saved message history.", e);
-      }
-    } else if (onboardedValue === 'true') {
+      } catch (e) {}
+    } else {
       const firstGreeting: Message = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: getRandomMelvinOpening(),
+        content: inviterName ? getIntroductionOpening(inviterName) : getRandomMelvinOpening(),
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages([firstGreeting]);
       localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify([firstGreeting]));
     }
 
-    const savedLifeMap = localStorage.getItem(LOCAL_STORAGE_LIFEMAP_KEY);
-    if (savedLifeMap) {
-      try {
-        const parsed = JSON.parse(savedLifeMap);
-        // Wipe historical memory of observations and timeline breakthroughs completely
-        parsed.observations = [];
-        parsed.timeline = [];
-        localStorage.setItem(LOCAL_STORAGE_LIFEMAP_KEY, JSON.stringify(parsed));
-        setLifeMap(parsed);
-      } catch (e) {
-        console.warn("Failed to load saved Life Map.", e);
-      }
-    }
-  }, []);
+    // Load memory -- Firestore first, fall back to localStorage
+    // Load recent session history for context injection
+    loadRecentSummaries(5).then(summaries => {
+      setRecentHistory(summaries);
+    });
 
-  const triggerLifeMapExtraction = async (messagesList: Message[], curLifeMap: LifeMap) => {
+    loadMemory().then((cloudMemory) => {
+      if (cloudMemory && cloudMemory.identity) {
+        setMemory(cloudMemory);
+        localStorage.setItem(LOCAL_STORAGE_MEMORY_KEY, JSON.stringify(cloudMemory));
+      } else {
+        const localMemory = localStorage.getItem(LOCAL_STORAGE_MEMORY_KEY);
+        if (localMemory) {
+          try { setMemory(JSON.parse(localMemory)); } catch (e) {}
+        }
+      }
+    });
+  }, [user]);
+
+  const triggerMemoryExtraction = async (messagesList: Message[], currentMemory: MelvinMemory) => {
     if (messagesList.length === 0) return;
+    setIsExtracting(true);
     try {
-      const res = await fetch('/api/melvin/extract-lifemap', {
+      const res = await fetch('/api/melvin/extract-memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: messagesList,
-          currentLifeMap: curLifeMap
-        })
+        body: JSON.stringify({ messages: messagesList, currentMemory })
       });
-
-      if (!res.ok) {
-        throw new Error("Extraction response error.");
-      }
-
+      if (!res.ok) return;
       const data = await res.json();
-      if (data.lifeMap) {
-        setLifeMap(data.lifeMap);
-        localStorage.setItem(LOCAL_STORAGE_LIFEMAP_KEY, JSON.stringify(data.lifeMap));
-        showToast("Melvin personal context synchronized.");
+      if (data.memory) {
+        setMemory(data.memory);
+        localStorage.setItem(LOCAL_STORAGE_MEMORY_KEY, JSON.stringify(data.memory));
+        await saveMemory(data.memory);
       }
     } catch (err) {
-      console.warn("Background life map sync failed:", err);
+      console.warn("Memory extraction failed:", err);
+    } finally {
+      setIsExtracting(false);
     }
   };
 
-  // Save changes to localStorage
   const handleSaveSettings = (newSettings: PersonalitySettings) => {
     setSettings(newSettings);
     localStorage.setItem(LOCAL_STORAGE_SETTINGS_KEY, JSON.stringify(newSettings));
   };
 
-  const handleCompleteOnboarding = (initSettings: PersonalitySettings) => {
-    setSettings(initSettings);
-    setIsOnboarded(true);
-    localStorage.setItem(LOCAL_STORAGE_SETTINGS_KEY, JSON.stringify(initSettings));
-    localStorage.setItem(LOCAL_STORAGE_ONBOARD_KEY, 'true');
-    showToast("Melvin Voice Line connected successfully.");
-
-    const firstGreeting: Message = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: getRandomMelvinOpening(),
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-    setMessages([firstGreeting]);
-    localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify([firstGreeting]));
+  const handleMemoryUpdate = async (updated: MelvinMemory) => {
+    setMemory(updated);
+    localStorage.setItem(LOCAL_STORAGE_MEMORY_KEY, JSON.stringify(updated));
+    await saveMemory(updated);
   };
 
   const saveHistoryToStorage = (history: Message[]) => {
@@ -168,12 +172,9 @@ export default function App() {
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 4500);
+    setTimeout(() => setToastMessage(null), 4500);
   };
 
-  // Chat API Call proxying Express backend
   const handleSendMessage = async (rawContent: string) => {
     const userMsg: Message = {
       id: crypto.randomUUID(),
@@ -191,16 +192,17 @@ export default function App() {
       const response = await fetch('/api/melvin/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: updatedMessages,
-          settings: settings,
-          lifeMap: lifeMap
-        })
+        body: JSON.stringify({ messages: updatedMessages, settings, memory, recentHistory })
       });
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || errorData.details || "Failed to connect voice stream.");
+        if (response.status === 429) {
+          // Fire text mode transition
+          window.dispatchEvent(new Event('melvin:ratelimit'));
+          return;
+        }
+        throw new Error(errorData.error || "Failed to connect.");
       }
 
       const data = await response.json();
@@ -215,14 +217,16 @@ export default function App() {
       setMessages(finalMessages);
       saveHistoryToStorage(finalMessages);
 
-      // Auto-extract Life Map background thread!
-      triggerLifeMapExtraction(finalMessages, lifeMap);
+      if (finalMessages.length % 2 === 0) {
+        triggerMemoryExtraction(finalMessages, memory);
+      }
+
     } catch (err: any) {
       console.error(err);
       const systemErrorMsg: Message = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: `*Vocal static crackles softly*\n\n"I ran into some temporary system static trying to stream. Check your network or make sure your api keys are set."`,
+        content: "Something went sideways on my end. Give me a moment.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       const finalMessages = [...updatedMessages, systemErrorMsg];
@@ -233,8 +237,31 @@ export default function App() {
     }
   };
 
+  const generateSessionSummary = async (messagesList: Message[]) => {
+    if (messagesList.length < 4) return;
+    try {
+      const res = await fetch('/api/melvin/summarize-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: messagesList })
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.summary) {
+        await saveSessionSummary(data.summary);
+        setHistoryRefreshTrigger(p => p + 1);
+        // Update recent history for context
+        loadRecentSummaries(5).then(setRecentHistory);
+      }
+    } catch (err) {
+      console.warn('Session summary failed:', err);
+    }
+  };
+
   const handleClearSession = () => {
-    if (confirm("Are you sure you want to clear your current call history with Melvin? This will reset the current dialogue stream.")) {
+    if (confirm("Clear your current call history with Melvin?")) {
+      // Generate session summary before clearing
+      generateSessionSummary(messages);
       const firstGreeting: Message = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -248,37 +275,61 @@ export default function App() {
   };
 
   const handleResetCalibration = () => {
-    if (confirm("Reset Melvin to raw factory configurations? This will return you to call setup and clear Melvin's persistent memory.")) {
-      setIsOnboarded(false);
+    if (confirm("Reset Melvin completely? This will clear all memory and history.")) {
       setMessages([]);
-      setLifeMap(DEFAULT_LIFEMAP);
-      localStorage.removeItem(LOCAL_STORAGE_ONBOARD_KEY);
+      setMemory(EMPTY_MEMORY);
       localStorage.removeItem(LOCAL_STORAGE_SESSION_KEY);
       localStorage.removeItem(LOCAL_STORAGE_SETTINGS_KEY);
-      localStorage.removeItem(LOCAL_STORAGE_LIFEMAP_KEY);
-      showToast("Melvin companion reset completed.");
+      localStorage.removeItem(LOCAL_STORAGE_MEMORY_KEY);
+      showToast("Melvin reset.");
+      // Start fresh with a greeting
+      const firstGreeting: Message = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: getRandomMelvinOpening(),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      setMessages([firstGreeting]);
     }
   };
 
   const handleExportChat = () => {
-    if (messages.length === 0) {
-      showToast("No active call history to export.");
-      return;
-    }
-    const textDump = messages.map(m => `${m.role === 'user' ? 'YOU' : 'MELVIN'} [${m.timestamp}]:\n${m.content}\n`).join('\n---\n\n');
+    if (messages.length === 0) { showToast("No call history to export."); return; }
+    const textDump = messages.map(m =>
+      `${m.role === 'user' ? 'YOU' : 'MELVIN'} [${m.timestamp}]:\n${m.content}\n`
+    ).join('\n---\n\n');
     const blob = new Blob([textDump], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `melvin_call_transcript_${new Date().toISOString().split('T')[0]}.txt`;
+    link.download = `melvin_transcript_${new Date().toISOString().split('T')[0]}.txt`;
     link.click();
-    showToast("Transcript downloaded as text file.");
+    showToast("Transcript downloaded.");
   };
 
+  const handleSignOut = async () => {
+    await signOut(auth);
+    setUser(null);
+    setMessages([]);
+    setMemory(EMPTY_MEMORY);
+    localStorage.removeItem(LOCAL_STORAGE_SESSION_KEY);
+  };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#141211] flex items-center justify-center">
+        <div className="text-stone-500 font-mono text-xs uppercase tracking-widest animate-pulse">Connecting...</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen onLogin={() => {}} />;
+  }
+
   return (
-    <div className="min-h-screen bg-[#141211] text-stone-100 relative flex flex-col font-sans transition-all border-8 border-stone-900">
-      
-      {/* Dynamic Toast Alerts */}
+    <div className="min-h-screen bg-[#141211] text-stone-100 relative flex flex-col font-sans md:border-8 md:border-stone-900">
+
       <AnimatePresence>
         {toastMessage && (
           <motion.div
@@ -293,100 +344,81 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Main Top Header */}
-      <header className="border-b-4 border-stone-900 bg-[#E8E4DE] text-stone-900 z-30 shadow-none">
-        <div className="max-w-4xl mx-auto px-4 md:px-8 py-3.5 flex items-center justify-between">
+      <header className="border-b-4 border-stone-900 bg-[#E8E4DE] text-stone-900 z-30 hidden md:block">
+        <div className="max-w-5xl mx-auto px-4 md:px-8 py-3.5 flex items-center justify-between">
           <div className="flex items-center space-x-3 select-none">
-            <div className="p-2 bg-[#7C3AED] border border-stone-900 text-white">
-              <BrainCircuit className="h-5 w-5 text-white" />
+            <div className="w-9 h-9 overflow-hidden rounded-lg border border-stone-900 shrink-0">
+              <img src="/src/assets/images/melvin_app_icon.png" alt="Melvin" className="w-full h-full object-cover" />
             </div>
             <div>
               <div className="flex items-center space-x-2">
                 <h1 className="font-display font-black text-xl text-stone-900 tracking-tighter uppercase italic">Melvin</h1>
-                <span className="font-mono text-[8.5px] font-black text-purple-700 bg-purple-100 border border-stone-900 px-1.5 py-0.2 uppercase">VOICE LINE</span>
+                <span className="font-mono text-[8.5px] font-black text-purple-700 bg-purple-100 border border-stone-900 px-1.5 uppercase">VOICE LINE</span>
               </div>
-              <p className="text-[9px] text-[#7C3AED] font-mono tracking-wider font-extrabold uppercase">
-                EMOTIONAL SUPPORT GOAT • HONEST COMPANY
-              </p>
+              <p className="text-[9px] text-[#7C3AED] font-mono tracking-wider font-extrabold uppercase">The first person you call</p>
             </div>
           </div>
 
           <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setShowAboutModal(true)}
-              className="px-2.5 py-1.5 border border-stone-900 bg-white hover:bg-stone-50 text-stone-900 text-[10px] font-black uppercase tracking-wider font-display transition-all cursor-pointer flex items-center gap-1 shadow-xs"
-            >
+            <AnimatePresence>
+              {isExtracting && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="flex items-center gap-1.5 px-2 py-1 bg-purple-50 border border-purple-200"
+                >
+                  <motion.div
+                    animate={{ scale: [1, 1.4, 1] }}
+                    transition={{ repeat: Infinity, duration: 0.8 }}
+                    className="w-1.5 h-1.5 bg-purple-500 rounded-full"
+                  />
+                  <span className="text-[8px] font-mono font-black uppercase tracking-wider text-purple-600">Filing...</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <button onClick={() => setShowInvitePanel(true)}
+              className="px-2.5 py-1.5 border border-stone-900 bg-purple-700 hover:bg-purple-600 text-white text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer">
+              Invite
+            </button>
+            <button onClick={() => setShowAboutModal(true)}
+              className="px-2.5 py-1.5 border border-stone-900 bg-white hover:bg-stone-50 text-stone-900 text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer">
               Info
             </button>
-            {isOnboarded && (
-              <>
-                <button
-                  onClick={() => setShowMemoryBank(!showMemoryBank)}
-                  title="Toggle Cognitive Memory Bank notebook panel"
-                  className={`px-2.5 py-1.5 border border-stone-900 text-[10px] font-black uppercase tracking-wider font-display transition-all cursor-pointer flex items-center gap-1.5 shadow-xs ${
-                    showMemoryBank 
-                      ? 'bg-[#7C3AED] hover:bg-purple-800 text-white border-stone-900' 
-                      : 'bg-white hover:bg-stone-55 text-stone-900'
-                  }`}
-                >
-                  <BookOpen className="w-3.5 h-3.5" />
-                  <span>{showMemoryBank ? 'Hide Records' : 'Memory Bank'}</span>
-                </button>
-                <button
-                  onClick={handleExportChat}
-                  title="Export dialogue transcript"
-                  className="p-1.5 bg-white border border-stone-900 text-stone-900 hover:bg-stone-55 transition-all cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onClick={handleResetCalibration}
-                  title="Reset Melvin memory & line calibration"
-                  className="p-1.5 bg-rose-50 border border-stone-900 text-rose-700 hover:bg-rose-100 transition-colors cursor-pointer"
-                >
-                  <RefreshCcw className="w-3.5 h-3.5" />
-                </button>
-              </>
-            )}
+            <button onClick={handleExportChat}
+              className="p-1.5 bg-white border border-stone-900 text-stone-900 hover:bg-stone-50 transition-all cursor-pointer" title="Export transcript">
+              <Download className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={handleResetCalibration}
+              className="p-1.5 bg-rose-50 border border-stone-900 text-rose-700 hover:bg-rose-100 transition-colors cursor-pointer" title="Reset Melvin">
+              <RefreshCcw className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={handleSignOut}
+              className="p-1.5 bg-white border border-stone-900 text-stone-500 hover:text-stone-900 hover:bg-stone-50 transition-all cursor-pointer" title="Sign out">
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Main FaceTime Center Layout */}
-      <main className={`flex-1 w-full mx-auto px-4 py-6 flex flex-col justify-center transition-all duration-300 ${
-        isOnboarded && showMemoryBank ? 'max-w-6xl' : 'max-w-4xl'
-      }`}>
-        {!isOnboarded ? (
-          <div className="w-full py-4 text-stone-900 max-w-4xl mx-auto">
-            <OnboardingFlow onComplete={handleCompleteOnboarding} />
-          </div>
-        ) : (
-          <div className={`grid grid-cols-1 ${showMemoryBank ? 'lg:grid-cols-12' : 'max-w-xl mx-auto'} gap-6 w-full items-start`}>
-            <div className={`${showMemoryBank ? 'lg:col-span-6 xl:col-span-5 w-full' : 'w-full'}`}>
-              <MelvinConsole 
-                messages={messages}
-                settings={settings}
-                onUpdateSettings={handleSaveSettings}
-                onSendMessage={handleSendMessage}
-                onClearSession={handleClearSession}
-                isGenerating={isGenerating}
-                onQuickTopic={handleSendMessage}
-              />
-            </div>
-            
-            {showMemoryBank && (
-              <div className="lg:col-span-6 xl:col-span-7 w-full h-[680px]">
-                <MemoryBankPanel 
-                  lifeMap={lifeMap} 
-                  onSendMessage={handleSendMessage}
-                />
-              </div>
-            )}
-          </div>
-        )}
+      <main className="flex-1 w-full flex flex-col items-center justify-center md:px-4 md:py-6 p-0 overflow-hidden">
+        <MelvinConsole
+          messages={messages}
+          settings={settings}
+          onUpdateSettings={handleSaveSettings}
+          onSendMessage={handleSendMessage}
+          onClearSession={handleClearSession}
+          isGenerating={isGenerating}
+          onQuickTopic={handleSendMessage}
+          memory={memory}
+          isExtracting={isExtracting}
+          onMemoryUpdate={handleMemoryUpdate}
+          userId={user?.uid}
+          historyRefreshTrigger={historyRefreshTrigger}
+        />
       </main>
 
-      {/* About Melvin Modal */}
       <AnimatePresence>
         {showAboutModal && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 flex items-center justify-center p-4">
@@ -394,37 +426,26 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-stone-950 border-4 border-stone-900 rounded-none max-w-md w-full overflow-hidden p-6 text-stone-300 relative space-y-4 shadow-2xl"
+              className="bg-stone-950 border-4 border-stone-900 max-w-md w-full p-6 text-stone-300 space-y-4 shadow-2xl"
             >
               <div className="flex items-center space-x-3.5 border-b border-stone-900 pb-3">
-                <BrainCircuit className="h-7 w-7 text-[#7C3AED]" />
+                <img src="/src/assets/images/melvin_app_icon.png" alt="Melvin" className="w-7 h-7 rounded-md object-cover" />
                 <div>
-                  <h3 className="font-display font-black text-lg text-white uppercase tracking-tight">Melvin, the Voice Companion</h3>
-                  <p className="font-mono text-[9px] uppercase font-bold text-purple-400 tracking-widest">Active Memory & Conversation Node</p>
+                  <h3 className="font-display font-black text-lg text-white uppercase tracking-tight">Melvin</h3>
+                  <p className="font-mono text-[9px] uppercase font-bold text-purple-400 tracking-widest">The first person you call</p>
                 </div>
               </div>
-
-              <div className="space-y-3.5 text-xs text-stone-300 leading-relaxed">
-                <p>
-                  Melvin is an emotionally intelligent retro AI companion modeled as awise 16-bit anthropomorphic goat. He values direct self-reflection over dry software productivity tracking.
-                </p>
-                <div className="border border-stone-900 bg-[#7C3AED]/10 p-3.5 text-stone-200 space-y-1.5">
-                  <span className="font-mono text-[9.5px] font-black uppercase text-purple-400 block tracking-wider">Natural Conversation:</span>
-                  <p className="font-medium">
-                    He keeps a full, silent context model in his gears, allowing him to reference your background goals, blind spots, and contradictions organic during calls rather than in dry metrics dashboards.
-                  </p>
+              <div className="space-y-3 text-xs text-stone-300 leading-relaxed">
+                <p>Melvin is a thoughtful, funny, emotionally intelligent British companion who remembers what matters.</p>
+                <div className="border border-stone-900 bg-[#7C3AED]/10 p-3.5 space-y-1.5">
+                  <span className="font-mono text-[9.5px] font-black uppercase text-purple-400 block tracking-wider">Your data stays yours:</span>
+                  <p className="font-medium">Your conversations are private by design. Melvin remembers you. We don't read what you tell him.</p>
                 </div>
-                <p>
-                  Speak clearly into your microphone when you activate the call. Connect deeper, examine personal truths, and receive dry, honest wit in a warm, trustworthy FaceTime phone loop.
-                </p>
+                <p>Speak into your microphone and Melvin will respond. He remembers across every conversation.</p>
               </div>
-
               <div className="pt-2 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setShowAboutModal(false)}
-                  className="bg-[#7C3AED] hover:bg-purple-600 text-white border border-purple-500 font-display font-black text-xs uppercase tracking-widest py-2.5 px-5 transition-all cursor-pointer"
-                >
+                <button type="button" onClick={() => setShowAboutModal(false)}
+                  className="bg-[#7C3AED] hover:bg-purple-600 text-white border border-purple-500 font-display font-black text-xs uppercase tracking-widest py-2.5 px-5 transition-all cursor-pointer">
                   Close
                 </button>
               </div>
@@ -433,9 +454,21 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <footer className="border-t border-stone-900 bg-stone-950 py-4 text-center text-[9px] text-stone-500 font-mono font-bold uppercase tracking-widest">
-        <p>© 2026 Melvin companion. No software analytics dashboards. Just companionship.</p>
+      <footer className="border-t border-stone-900 bg-stone-950 py-4 text-center text-[9px] text-stone-500 font-mono font-bold uppercase tracking-widest hidden md:block">
+        <p>© 2026 Melvin. No dashboards. Just companionship. <button onClick={() => setShowPrivacy(true)} className="underline text-stone-500 hover:text-stone-300 cursor-pointer transition-colors">Privacy</button></p>
       </footer>
+      <AnimatePresence>
+        {showPrivacy && <PrivacyPage onClose={() => setShowPrivacy(false)} />}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showInvitePanel && user && (
+          <InvitePanel
+            uid={user.uid}
+            displayName={user.displayName || 'Melvin user'}
+            onClose={() => setShowInvitePanel(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
