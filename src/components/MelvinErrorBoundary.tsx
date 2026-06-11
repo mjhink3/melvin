@@ -5,6 +5,7 @@
 
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { motion } from 'motion/react';
+import melvinIcon from '../assets/images/melvin_app_icon.png';
 
 interface Props { children: ReactNode; }
 interface State { hasError: boolean; errorMessage: string; }
@@ -33,7 +34,6 @@ export default class MelvinErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('Melvin crashed:', error, info);
-    this.setState({ errorMessage: error.message + ' | ' + error.stack?.split('\n')[1] });
   }
 
   render() {
@@ -52,7 +52,7 @@ export default class MelvinErrorBoundary extends Component<Props, State> {
             {/* Header */}
             <div className="flex items-center gap-3 border-b border-stone-800 pb-4">
               <div className="w-10 h-10 overflow-hidden rounded-lg border border-stone-700 shrink-0">
-                <img src="/src/assets/images/melvin_app_icon.png" alt="Melvin" className="w-full h-full object-cover" />
+                <img src={melvinIcon} alt="Melvin" className="w-full h-full object-cover" />
               </div>
               <div>
                 <p className="text-white font-bold text-sm">Melvin</p>

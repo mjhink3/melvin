@@ -13,6 +13,7 @@ import MemoryPanel, { MemoryBuckets } from './MemoryPanel';
 import AgentPanel, { AgentTask } from './AgentPanel';
 import TextMode from './TextMode';
 import { Message, PersonalitySettings } from '../types';
+import melvinIcon from '../assets/images/melvin_app_icon.png';
 
 // Mobile tab type
 type MobileTab = 'call' | 'memory' | 'tasks';
@@ -195,7 +196,7 @@ export default function MelvinLayout(props: MelvinLayoutProps) {
                 {/* Status bar */}
                 <div className="flex items-center gap-2 px-3 py-2 bg-[#E8E4DE] border-b-2 border-stone-900 shrink-0 z-10">
                   <div className="w-7 h-7 overflow-hidden rounded-lg border border-stone-900 shrink-0">
-                    <img src="/src/assets/images/melvin_app_icon.png" alt="Melvin" className="w-full h-full object-cover" />
+                    <img src={melvinIcon} alt="Melvin" className="w-full h-full object-cover" />
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-1.5">

@@ -18,6 +18,7 @@ import PrivacyPage from './components/PrivacyPage';
 import InvitePanel from './components/InvitePanel';
 import { redeemInvite, getOrCreateInviteProfile, getPendingInvite, clearPendingInvite } from './inviteService';
 import { saveSessionSummary, loadRecentSummaries, formatHistoryForPrompt, setHistoryUserId, SessionSummary } from './historyService';
+import melvinIcon from './assets/images/melvin_app_icon.png';
 
 const LOCAL_STORAGE_SESSION_KEY = 'melvin_chat_history_v1';
 const LOCAL_STORAGE_SETTINGS_KEY = 'melvin_personality_settings_v1';
@@ -348,7 +349,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto px-4 md:px-8 py-3.5 flex items-center justify-between">
           <div className="flex items-center space-x-3 select-none">
             <div className="w-9 h-9 overflow-hidden rounded-lg border border-stone-900 shrink-0">
-              <img src="/src/assets/images/melvin_app_icon.png" alt="Melvin" className="w-full h-full object-cover" />
+              <img src={melvinIcon} alt="Melvin" className="w-full h-full object-cover" />
             </div>
             <div>
               <div className="flex items-center space-x-2">
@@ -429,7 +430,7 @@ export default function App() {
               className="bg-stone-950 border-4 border-stone-900 max-w-md w-full p-6 text-stone-300 space-y-4 shadow-2xl"
             >
               <div className="flex items-center space-x-3.5 border-b border-stone-900 pb-3">
-                <img src="/src/assets/images/melvin_app_icon.png" alt="Melvin" className="w-7 h-7 rounded-md object-cover" />
+                <img src={melvinIcon} alt="Melvin" className="w-7 h-7 rounded-md object-cover" />
                 <div>
                   <h3 className="font-display font-black text-lg text-white uppercase tracking-tight">Melvin</h3>
                   <p className="font-mono text-[9px] uppercase font-bold text-purple-400 tracking-widest">The first person you call</p>

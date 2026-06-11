@@ -8,6 +8,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Message } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Send, Mic } from 'lucide-react';
+import melvinIcon from '../assets/images/melvin_app_icon.png';
 
 interface TextModeProps {
   messages: Message[];
@@ -48,7 +49,7 @@ export function getTextModeTransition(): string {
 function MelvinAvatar() {
   return (
     <div className="w-7 h-7 rounded-full overflow-hidden border-2 border-stone-700 shrink-0">
-      <img src="/src/assets/images/melvin_app_icon.png" alt="Melvin" className="w-full h-full object-cover" />
+      <img src={melvinIcon} alt="Melvin" className="w-full h-full object-cover" />
     </div>
   );
 }
